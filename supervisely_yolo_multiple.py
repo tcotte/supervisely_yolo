@@ -24,7 +24,7 @@ import os
 import shutil
 from shutil import copyfile
 import typing
-
+import cv2
 import yaml
 from sklearn.model_selection import train_test_split
 
@@ -55,7 +55,7 @@ class S2Y:
         in the ReadME.md
         :param output_path: absolute path of YOLO dataset
         """
-        for step in ["train", "val"]:
+        for step in ["train", "val", "test"]:
             os.makedirs(os.path.join(output_path, step, 'labels'), exist_ok=True)
             os.makedirs(os.path.join(output_path, step, 'images'), exist_ok=True)
 
@@ -67,7 +67,7 @@ class S2Y:
                 f.write("%s\n" % class_name)
 
     @staticmethod
-    def create_data_file(class_name_list: typing.List, output_path: str) -> None:
+    def create_data_file(class_name_list: typing.List, output_path: str, no_testset: bool = True) -> None:
         """
         Create YOLO .yaml data file which is a yaml file gathering several dataset information:
         - train images folder
@@ -79,10 +79,17 @@ class S2Y:
         :param output_path: Path of YOLO project
         """
         class_file_path = os.path.join(output_path, 'data.yaml')
-        dict_yaml = {"train": "train/images",
-                     "val": "val/images",
-                     "nc": len(class_name_list),
-                     "names": class_name_list}
+        if no_testset:
+            dict_yaml = {"train": "train/images",
+                         "val": "val/images",
+                         "nc": len(class_name_list),
+                         "names": class_name_list}
+        else:
+            dict_yaml = {"train": "train/images",
+                         "val": "val/images",
+                         "test": "test/images",
+                         "nc": len(class_name_list),
+                         "names": class_name_list}
 
         with open(class_file_path, 'w') as outfile:
             yaml.dump(dict_yaml, outfile, default_flow_style=False)
@@ -271,16 +278,16 @@ def img_set_from_labels(annotation_files: typing.List) -> typing.List:
     return X
 
 
-def main(dest_path: str, input_path: str, skip_copy: bool, conversion_type: str, test_size: float) -> None:
+def main(dest_path: str, input_path: str, skip_copy: bool, conversion_type: str, val_size: float, test_size: float) -> None:
     """
     Main function which enables the possibility to pass from YOLO dataset to Supervise.ly dataset and inversely.
     :param dest_path: Output folder path
     :param input_path: Input folder path
     :param skip_copy: *not used for the moment*
     :param conversion_type: type of conversion, could be Supervise.ly to YOLO or YOLO to Supervise.ly
-    :param test_size: proportion of the dataset to include in the test split
+    :param val_size: proportion of the dataset to include in the test split
     """
-
+    X_test, y_test = [], []
     print("Processing...")
     if conversion_type == y2s_flag:
         try:
@@ -307,7 +314,7 @@ def main(dest_path: str, input_path: str, skip_copy: bool, conversion_type: str,
                 input_path[:-11]))
             exit(1)
         S2Y.create_yolo_file_structure(output_path=dest_path)
-        S2Y.create_data_file(class_names_array, output_path=dest_path)
+        S2Y.create_data_file(class_names_array, output_path=dest_path, no_testset=True if test_size == 0 else False)
 
         dataset_folders = [folder for folder in os.listdir(input_path)]
 
@@ -322,25 +329,28 @@ def main(dest_path: str, input_path: str, skip_copy: bool, conversion_type: str,
 
         X = img_set_from_labels(annotation_files=y)
 
-        if test_size == 0:
+        if val_size == 0:
             X_train = X
             y_train = y
-            X_test = []
-            y_test = []
+            X_val = []
+            y_val = []
 
-        elif test_size == 1:
+
+        elif val_size == 1:
             X_train = []
             y_train = []
-            X_test = X
-            y_test = y
+            X_val = X
+            y_val = y
 
         else:
             try:
-                X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42)
+                X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=val_size, random_state=42)
+                if test_size != 0:
+                    X_val, X_test, y_val, y_test = train_test_split(X_val, y_val, test_size=test_size, random_state=42)
             except Exception as e:
-                raise ("An exception occurred when try to split the dataset_1 in test/val part due to : " + str(e))
+                raise ("An exception occurred when try to split the dataset in test/val part due to : " + str(e))
 
-        for step_name, step_tuples in zip(["train", "val"], [(X_train, y_train), (X_test, y_test)]):
+        for step_name, step_tuples in zip(["train", "val", "test"], [(X_train, y_train), (X_val, y_val), (X_test, y_test)]):
             img_list, ann_list = step_tuples
             for x, y in zip(img_list, ann_list):
                 dst_x = os.path.join(dest_path, step_name, 'images', os.path.split(x)[-1])
@@ -377,6 +387,11 @@ if __name__ == "__main__":
     parser.add_option('--test_size',
                       dest="test_size", type=float,
                       help="Represent the proportion of the dataset to include in the test split",
+                      default=0)
+
+    parser.add_option('--val_size',
+                      dest="val_size", type=float,
+                      help="Represent the proportion of the dataset to include in the validation split",
                       default=0.15)
 
     options, args = parser.parse_args()
